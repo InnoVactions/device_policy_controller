@@ -4,10 +4,12 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.admin.DevicePolicyManager
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -446,6 +448,83 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         }
     }
 
+    // Add this as a class member
+    private var installResultReceiver: BroadcastReceiver? = null
+
+    // Add this method to handle installation results
+    private fun registerInstallReceiver() {
+        if (installResultReceiver != null) {
+            return // Already registered
+        }
+
+        installResultReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -999)
+                val sessionId = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
+
+                logToFile("[InstallReceiver] Installation callback received")
+                logToFile("[InstallReceiver] Session ID: $sessionId")
+                logToFile("[InstallReceiver] Status code: $status")
+
+                when (status) {
+                    PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                        logToFile("[InstallReceiver] STATUS_PENDING_USER_ACTION - This shouldn't happen for device owner")
+                        val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                        if (confirmIntent != null) {
+                            confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(confirmIntent)
+                        }
+                    }
+                    PackageInstaller.STATUS_SUCCESS -> {
+                        logToFile("[InstallReceiver] ✓ Installation SUCCESS!")
+                        // Optionally notify your Dart code
+                        channel.invokeMethod("onInstallSuccess", null)
+                    }
+                    PackageInstaller.STATUS_FAILURE -> {
+                        logToFile("[InstallReceiver] ✗ Installation FAILED")
+                        val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                        logToFile("[InstallReceiver] Failure message: $message")
+                    }
+                    PackageInstaller.STATUS_FAILURE_ABORTED -> {
+                        logToFile("[InstallReceiver] ✗ Installation ABORTED")
+                    }
+                    PackageInstaller.STATUS_FAILURE_BLOCKED -> {
+                        logToFile("[InstallReceiver] ✗ Installation BLOCKED")
+                        val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                        logToFile("[InstallReceiver] Blocked reason: $message")
+                    }
+                    PackageInstaller.STATUS_FAILURE_CONFLICT -> {
+                        logToFile("[InstallReceiver] ✗ Installation CONFLICT")
+                    }
+                    PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> {
+                        logToFile("[InstallReceiver] ✗ Installation INCOMPATIBLE")
+                    }
+                    PackageInstaller.STATUS_FAILURE_INVALID -> {
+                        logToFile("[InstallReceiver] ✗ Installation INVALID APK")
+                    }
+                    PackageInstaller.STATUS_FAILURE_STORAGE -> {
+                        logToFile("[InstallReceiver] ✗ Installation STORAGE ERROR")
+                    }
+                    else -> {
+                        logToFile("[InstallReceiver] Unknown status: $status")
+                    }
+                }
+            }
+        }
+
+        val filter = IntentFilter().apply {
+            addAction("com.sunvig.companion.INSTALL_ACTION") // Your custom action
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(installResultReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(installResultReceiver, filter)
+        }
+
+        logToFile("Install result receiver registered")
+    }
+
     private fun logToFile(message: String) {
         try {
             val logFile = File(context.getExternalFilesDir(null), "dpc_install.log")
@@ -570,7 +649,9 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                             }
 
                             logToFile("[Thread] Creating pending intent")
-                            val intent = Intent(context, context::class.java)
+                            val intent = Intent("com.sunvig.companion.INSTALL_ACTION").apply {
+                                setPackage(context.packageName)
+                            }
                             val pendingIntent = android.app.PendingIntent.getBroadcast(
                                 context,
                                 sessionId,
@@ -675,6 +756,7 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                     channel.invokeMethod("handleBootCompleted", null)
                     AppDeviceAdminReceiver.setIsFromBootCompleted(context, false)
                 }
+                registerInstallReceiver()
 
             } catch (e: Exception) {
             }
