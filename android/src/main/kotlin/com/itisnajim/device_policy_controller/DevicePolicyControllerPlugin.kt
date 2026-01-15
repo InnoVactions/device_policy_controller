@@ -445,46 +445,130 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         }
     }
 
+    private fun logToFile(message: String) {
+        try {
+            val logFile = File(context.getExternalFilesDir(null), "dpc_install.log")
+            val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
+            logFile.appendText("[$timestamp] $message\n")
+
+            // Also log to logcat
+            log(message)
+        } catch (e: Exception) {
+            log("Failed to write to log file: ${e.message}")
+        }
+    }
+
     private fun installApplication(apkUrl: String?, result: Result) {
+        logToFile("=== installApplication called ===")
+        logToFile("apkUrl: $apkUrl")
+
         if (!apkUrl.isNullOrEmpty()) {
             try {
+                logToFile("Android SDK version: ${Build.VERSION.SDK_INT}")
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    // Check if app is device owner
-                    if (!mDevicePolicyManager.isDeviceOwnerApp(context.packageName)) {
+                    val isDeviceOwner = mDevicePolicyManager.isDeviceOwnerApp(context.packageName)
+                    logToFile("Is device owner: $isDeviceOwner")
+                    logToFile("Package name: ${context.packageName}")
+
+                    if (!isDeviceOwner) {
+                        logToFile("ERROR: Not a device owner!")
                         result.error("INSTALL_APPLICATION_FAILED", "App is not a device owner", null)
                         return
                     }
 
                     val uri = Uri.parse(apkUrl)
+                    logToFile("Parsed URI: $uri")
+                    logToFile("URI scheme: ${uri.scheme}")
 
-                    // For device owner apps, use PackageInstaller for silent installation
                     val packageInstaller = context.packageManager.packageInstaller
+                    logToFile("Got package installer")
+
                     val params = android.content.pm.PackageInstaller.SessionParams(
                         android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL
                     )
+                    logToFile("Created session params")
 
                     val sessionId = packageInstaller.createSession(params)
-                    val session = packageInstaller.openSession(sessionId)
+                    logToFile("Created session ID: $sessionId")
 
-                    // Download and write APK to session in a background thread
+                    val session = packageInstaller.openSession(sessionId)
+                    logToFile("Opened session")
+
+                    logToFile("Starting background download thread...")
                     Thread {
                         try {
+                            logToFile("[Thread] Download thread started")
+                            logToFile("[Thread] Connecting to: $apkUrl")
+
                             val input = if (uri.scheme == "http" || uri.scheme == "https") {
-                                java.net.URL(apkUrl).openStream()
+                                logToFile("[Thread] Opening HTTP/HTTPS connection")
+                                val url = java.net.URL(apkUrl)
+                                val connection = url.openConnection() as java.net.HttpURLConnection
+
+                                if (connection is javax.net.ssl.HttpsURLConnection) {
+                                    logToFile("[Thread] Setting up SSL for self-signed cert")
+                                    val trustAllCerts = arrayOf<javax.net.ssl.TrustManager>(
+                                        object : javax.net.ssl.X509TrustManager {
+                                            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate>? = null
+                                            override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
+                                            override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
+                                        }
+                                    )
+                                    val sslContext = javax.net.ssl.SSLContext.getInstance("SSL")
+                                    sslContext.init(null, trustAllCerts, java.security.SecureRandom())
+                                    connection.sslSocketFactory = sslContext.socketFactory
+                                    connection.hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
+                                }
+
+                                logToFile("[Thread] Connecting...")
+                                connection.connect()
+                                logToFile("[Thread] Connected! Response code: ${connection.responseCode}")
+                                logToFile("[Thread] Response message: ${connection.responseMessage}")
+                                logToFile("[Thread] Content length: ${connection.contentLength}")
+
+                                if (connection.responseCode != 200) {
+                                    logToFile("[Thread] ERROR: Bad response code ${connection.responseCode}")
+                                    session.abandon()
+                                    return@Thread
+                                }
+
+                                connection.inputStream
                             } else {
+                                logToFile("[Thread] Opening content resolver stream")
                                 context.contentResolver.openInputStream(uri)
                             }
 
-                            val output = session.openWrite("package", 0, -1)
+                            if (input == null) {
+                                logToFile("[Thread] ERROR: Input stream is null!")
+                                session.abandon()
+                                return@Thread
+                            }
 
-                            input?.use { inputStream ->
+                            logToFile("[Thread] Got input stream, opening output stream")
+                            val output = session.openWrite("package", 0, -1)
+                            logToFile("[Thread] Output stream opened, starting copy...")
+
+                            var totalBytes = 0L
+                            input.use { inputStream ->
                                 output.use { outputStream ->
-                                    inputStream.copyTo(outputStream)
+                                    val buffer = ByteArray(8192)
+                                    var bytesRead: Int
+                                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                                        outputStream.write(buffer, 0, bytesRead)
+                                        totalBytes += bytesRead
+
+                                        if (totalBytes % (1024 * 1024) == 0L) {
+                                            logToFile("[Thread] Downloaded: ${totalBytes / 1024 / 1024} MB")
+                                        }
+                                    }
+                                    logToFile("[Thread] Copy complete! Total bytes: $totalBytes")
                                     session.fsync(outputStream)
+                                    logToFile("[Thread] fsync complete")
                                 }
                             }
 
-                            // Create intent for installation callback
+                            logToFile("[Thread] Creating pending intent")
                             val intent = Intent(context, context::class.java)
                             val pendingIntent = android.app.PendingIntent.getBroadcast(
                                 context,
@@ -495,38 +579,38 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                                 else 0
                             )
 
+                            logToFile("[Thread] Committing session...")
                             session.commit(pendingIntent.intentSender)
+                            logToFile("[Thread] Session committed")
+
                             session.close()
+                            logToFile("[Thread] Session closed - Installation should start now!")
 
                         } catch (e: Exception) {
+                            logToFile("[Thread] === EXCEPTION IN DOWNLOAD THREAD ===")
+                            logToFile("[Thread] Exception type: ${e.javaClass.name}")
+                            logToFile("[Thread] Exception message: ${e.message}")
+                            logToFile("[Thread] Stack trace: ${e.stackTraceToString()}")
                             session.abandon()
-                            log("Installation failed: ${e.message}")
+                            logToFile("[Thread] Session abandoned")
                         }
                     }.start()
 
+                    logToFile("Background thread started, returning success to Dart")
                     result.success(true)
-//                val uri = Uri.parse(apkUrl)
-//
-//                // Create an Intent to start the installation process
-//                val installIntent = Intent(Intent.ACTION_VIEW).apply {
-//                    setDataAndType(uri, "application/vnd.android.package-archive")
-//                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-//                }
-//
-//                // Check if the app installer is available
-//                val packageManager = context.packageManager
-//                val activities = packageManager.queryIntentActivities(installIntent, 0)
-//
-//                if (activities.isNotEmpty()) {
-//                    context.startActivity(installIntent)
-//                    result.success(true) // Return success if the installation is started successfully
                 } else {
-                    result.error("INSTALL_APPLICATION_FAILED", "App installer not available.", null)
+                    logToFile("ERROR: Android version too old (${Build.VERSION.SDK_INT})")
+                    result.error("INSTALL_APPLICATION_FAILED", "Silent installation requires Android 5.0+", null)
                 }
             } catch (e: Exception) {
+                logToFile("=== EXCEPTION IN MAIN FUNCTION ===")
+                logToFile("Exception type: ${e.javaClass.name}")
+                logToFile("Exception message: ${e.message}")
+                logToFile("Stack trace: ${e.stackTraceToString()}")
                 result.error("INSTALL_APPLICATION_FAILED", e.localizedMessage, null)
             }
         } else {
+            logToFile("ERROR: apkUrl is null or empty")
             result.error("INVALID_ARGUMENTS", "The 'apkUrl' argument is null or empty", null)
         }
     }
