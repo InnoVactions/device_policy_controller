@@ -517,7 +517,7 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         }
 
         if (Build.VERSION.SDK_INT >= 33) {
-            context.registerReceiver(installResultReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            context.registerReceiver(installResultReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         } else {
             context.registerReceiver(installResultReceiver, filter)
         }
