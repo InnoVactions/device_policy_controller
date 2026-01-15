@@ -448,21 +448,78 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
     private fun installApplication(apkUrl: String?, result: Result) {
         if (!apkUrl.isNullOrEmpty()) {
             try {
-                val uri = Uri.parse(apkUrl)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    // Check if app is device owner
+                    if (!mDevicePolicyManager.isDeviceOwnerApp(context.packageName)) {
+                        result.error("INSTALL_APPLICATION_FAILED", "App is not a device owner", null)
+                        return
+                    }
 
-                // Create an Intent to start the installation process
-                val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, "application/vnd.android.package-archive")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
+                    val uri = Uri.parse(apkUrl)
 
-                // Check if the app installer is available
-                val packageManager = context.packageManager
-                val activities = packageManager.queryIntentActivities(installIntent, 0)
+                    // For device owner apps, use PackageInstaller for silent installation
+                    val packageInstaller = context.packageManager.packageInstaller
+                    val params = android.content.pm.PackageInstaller.SessionParams(
+                        android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL
+                    )
 
-                if (activities.isNotEmpty()) {
-                    context.startActivity(installIntent)
-                    result.success(true) // Return success if the installation is started successfully
+                    val sessionId = packageInstaller.createSession(params)
+                    val session = packageInstaller.openSession(sessionId)
+
+                    // Download and write APK to session in a background thread
+                    Thread {
+                        try {
+                            val input = if (uri.scheme == "http" || uri.scheme == "https") {
+                                java.net.URL(apkUrl).openStream()
+                            } else {
+                                context.contentResolver.openInputStream(uri)
+                            }
+
+                            val output = session.openWrite("package", 0, -1)
+
+                            input?.use { inputStream ->
+                                output.use { outputStream ->
+                                    inputStream.copyTo(outputStream)
+                                    session.fsync(outputStream)
+                                }
+                            }
+
+                            // Create intent for installation callback
+                            val intent = Intent(context, context::class.java)
+                            val pendingIntent = android.app.PendingIntent.getBroadcast(
+                                context,
+                                sessionId,
+                                intent,
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                                    android.app.PendingIntent.FLAG_MUTABLE
+                                else 0
+                            )
+
+                            session.commit(pendingIntent.intentSender)
+                            session.close()
+
+                        } catch (e: Exception) {
+                            session.abandon()
+                            log("Installation failed: ${e.message}")
+                        }
+                    }.start()
+
+                    result.success(true)
+//                val uri = Uri.parse(apkUrl)
+//
+//                // Create an Intent to start the installation process
+//                val installIntent = Intent(Intent.ACTION_VIEW).apply {
+//                    setDataAndType(uri, "application/vnd.android.package-archive")
+//                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+//                }
+//
+//                // Check if the app installer is available
+//                val packageManager = context.packageManager
+//                val activities = packageManager.queryIntentActivities(installIntent, 0)
+//
+//                if (activities.isNotEmpty()) {
+//                    context.startActivity(installIntent)
+//                    result.success(true) // Return success if the installation is started successfully
                 } else {
                     result.error("INSTALL_APPLICATION_FAILED", "App installer not available.", null)
                 }
@@ -520,7 +577,7 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                 }*/
                 val intentFilter = IntentFilter()
                 actions.forEach { intentFilter.addAction(it) }
-                log("actions: ${actions.joinToString(", ") }}")
+                log("actions: ${actions.joinToString(", ")}}")
                 context.registerReceiver(appDeviceAdminReceiver, intentFilter)
                 adminComponentName = appDeviceAdminReceiver.getWho(context)
                 log("registerReceiver packageName: " + adminComponentName.packageName + ", className: " + adminComponentName.className)
