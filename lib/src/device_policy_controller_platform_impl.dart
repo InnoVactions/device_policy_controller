@@ -45,7 +45,8 @@ class DevicePolicyControllerPlatformImpl
 
   @override
   Future<bool> installApplication(String? apkUrl) async {
-    return await _methodChannel.invokeMethod('installApplication', apkUrl);
+    return await _methodChannel.invokeMethod(
+        'installApplication', {"apkUrl": apkUrl});
   }
 
   @override
@@ -89,8 +90,8 @@ class DevicePolicyControllerPlatformImpl
   }
 
   @override
-  Future<void> setApplicationRestrictions(
-      String packageName, Map<String, String> restrictions) {
+  Future<void> setApplicationRestrictions(String packageName,
+      Map<String, String> restrictions) {
     return _methodChannel.invokeMethod('setApplicationRestrictions', {
       'packageName': packageName,
       'restrictions': restrictions,
