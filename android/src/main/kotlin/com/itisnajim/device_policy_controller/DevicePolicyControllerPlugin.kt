@@ -516,7 +516,7 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
             addAction("com.sunvig.companion.INSTALL_ACTION") // Your custom action
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= 33) {
             context.registerReceiver(installResultReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             context.registerReceiver(installResultReceiver, filter)
