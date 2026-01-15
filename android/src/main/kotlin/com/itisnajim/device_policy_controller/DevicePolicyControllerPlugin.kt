@@ -477,8 +477,18 @@ class DevicePolicyControllerPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                     }
                     PackageInstaller.STATUS_SUCCESS -> {
                         logToFile("[InstallReceiver] ✓ Installation SUCCESS!")
-                        // Optionally notify your Dart code
-                        channel.invokeMethod("onInstallSuccess", null)
+
+                        // Wait a moment before restarting
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            logToFile("[InstallReceiver] Restarting app after delay...")
+
+                            val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                            if (intent != null) {
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                                context.startActivity(intent)
+                                logToFile("[InstallReceiver] App restarted")
+                            }
+                        }, 2000)
                     }
                     PackageInstaller.STATUS_FAILURE -> {
                         logToFile("[InstallReceiver] ✗ Installation FAILED")
