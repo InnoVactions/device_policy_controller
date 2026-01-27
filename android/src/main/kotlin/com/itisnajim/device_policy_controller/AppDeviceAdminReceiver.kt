@@ -126,9 +126,8 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
         val lastVersionCode = prefs.getInt("last_version_code", -1)
         val currentVersionCode = try {
-            if (android.os.Build.VERSION.SDK_INT >= 33) {
-                context.packageManager.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0)).longVersionCode.toInt()
-            } else if (android.os.Build.VERSION.SDK_INT >= 28) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                @Suppress("DEPRECATION")
                 context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode.toInt()
             } else {
                 @Suppress("DEPRECATION")
