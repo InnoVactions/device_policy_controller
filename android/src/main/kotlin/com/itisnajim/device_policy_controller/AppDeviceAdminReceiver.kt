@@ -58,6 +58,7 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
 
     private fun clearAppData(context: Context) {
         logToFile(context, "--- clearAppData started ---")
+        var dpmSuccess = false
         try {
             // Method 1: Using DevicePolicyManager (requires API 28+)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
@@ -65,18 +66,31 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
                 val adminComponent = ComponentName(context, AppDeviceAdminReceiver::class.java)
                 if (dpm.isDeviceOwnerApp(context.packageName)) {
                     logToFile(context, "Is device owner, using clearApplicationUserData")
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                        dpm.clearApplicationUserData(adminComponent, context.packageName, { r -> r.run() }, { p, s ->
-                            logToFile(context, "Data cleared via DPM for $p: $s")
-                        })
-                    }
-                    return
+                    // Note: clearApplicationUserData is asynchronous.
+                    // The success callback 's' indicates if the operation was successful.
+                    dpm.clearApplicationUserData(adminComponent, context.packageName, { r -> r.run() }, { p, s ->
+                        logToFile(context, "Data cleared via DPM for $p: $s")
+                        if (!s) {
+                            logToFile(context, "DPM failed to clear data, attempting manual fallback from callback")
+                            manualClearAppData(context)
+                        }
+                    })
+                    dpmSuccess = true
+                } else {
+                    logToFile(context, "Not a device owner, skipping DPM clearApplicationUserData")
                 }
             }
         } catch (e: Exception) {
             logToFile(context, "Failed to clear data via DPM: ${e.message}")
         }
 
+        if (!dpmSuccess) {
+            manualClearAppData(context)
+        }
+    }
+
+    private fun manualClearAppData(context: Context) {
+        logToFile(context, "--- manualClearAppData started ---")
         try {
             val cacheDir = context.cacheDir
             val appDir = File(cacheDir.parent ?: return)
@@ -119,8 +133,9 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
         log("onReceive: action: $action, extras: $extras")
 
         if (Intent.ACTION_MY_PACKAGE_REPLACED == action) {
-            logToFile(context, "App updated, clearing data...")
+            logToFile(context, "App updated, clearing data (via MY_PACKAGE_REPLACED)...")
             clearAppData(context)
+            return // Skip version code detection if we already handled it via action
         }
 
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
@@ -138,7 +153,7 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
         }
 
         if (lastVersionCode != -1 && currentVersionCode != lastVersionCode) {
-            logToFile(context, "Version change detected ($lastVersionCode -> $currentVersionCode), clearing data...")
+            logToFile(context, "Version change detected ($lastVersionCode -> $currentVersionCode), clearing data (via version code change)...")
             // Clear data but PRESERVE the new version code so we don't loop
             prefs.edit().putInt("last_version_code", currentVersionCode).apply()
             clearAppData(context)
