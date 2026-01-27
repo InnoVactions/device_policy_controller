@@ -18,6 +18,19 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
     companion object {
         fun log(message: String) = Log.d("dpc::", message)
 
+        fun logToFile(context: Context, message: String) {
+            try {
+                val logFile = File(context.getExternalFilesDir(null), "dpc_install.log")
+                val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
+                logFile.appendText("[$timestamp] $message\n")
+
+                // Also log to logcat
+                log(message)
+            } catch (e: Exception) {
+                log("Failed to write to log file: ${e.message}")
+            }
+        }
+
         private const val KEY_IS_FROM_BOOT_COMPLETED = "is_from_boot_completed"
 
         fun setIsFromBootCompleted(context: Context, value: Boolean) {
@@ -44,27 +57,27 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
     }
 
     private fun clearAppData(context: Context) {
-        log("Clearing app data and cache...")
+        logToFile(context, "--- clearAppData started ---")
         try {
             // Method 1: Using DevicePolicyManager (requires API 28+)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                 val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
                 val adminComponent = ComponentName(context, AppDeviceAdminReceiver::class.java)
                 if (dpm.isDeviceOwnerApp(context.packageName)) {
-                    log("Is device owner, using clearApplicationUserData")
+                    logToFile(context, "Is device owner, using clearApplicationUserData")
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                         dpm.clearApplicationUserData(adminComponent, context.packageName, { r -> r.run() }, { p, s ->
-                            log("Data cleared for $p: $s")
+                            logToFile(context, "Data cleared via DPM for $p: $s")
                         })
                     }
                     return
                 }
             }
         } catch (e: Exception) {
-            log("Failed to clear data via DPM: ${e.message}")
+            logToFile(context, "Failed to clear data via DPM: ${e.message}")
         }
 
-=        try {
+        try {
             val cacheDir = context.cacheDir
             val appDir = File(cacheDir.parent ?: return)
             if (appDir.exists()) {
@@ -72,14 +85,15 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
                 if (children != null) {
                     for (s in children) {
                         if (s != "lib") {
-                            deleteDir(File(appDir, s))
-                            log("Deleted: $s")
+                            val deleted = deleteDir(File(appDir, s))
+                            logToFile(context, "Manual delete $s: $deleted")
                         }
                     }
                 }
             }
+            logToFile(context, "Manual cache/storage clearing completed")
         } catch (e: Exception) {
-            log("Failed to manually clear data: ${e.message}")
+            logToFile(context, "Failed to manually clear data: ${e.message}")
         }
     }
 
@@ -105,7 +119,7 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
         log("onReceive: action: $action, extras: $extras")
 
         if (Intent.ACTION_MY_PACKAGE_REPLACED == action) {
-            log("App updated, clearing data...")
+            logToFile(context, "App updated, clearing data...")
             clearAppData(context)
         }
 
@@ -125,7 +139,7 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
         }
 
         if (lastVersionCode != -1 && currentVersionCode != lastVersionCode) {
-            log("Version change detected ($lastVersionCode -> $currentVersionCode), clearing data...")
+            logToFile(context, "Version change detected ($lastVersionCode -> $currentVersionCode), clearing data...")
             // Clear data but PRESERVE the new version code so we don't loop
             prefs.edit().putInt("last_version_code", currentVersionCode).apply()
             clearAppData(context)
