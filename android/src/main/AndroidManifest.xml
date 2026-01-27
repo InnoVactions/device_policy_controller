@@ -35,6 +35,7 @@
       <intent-filter>
         <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
         <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
       </intent-filter>
     </receiver>
   </application>

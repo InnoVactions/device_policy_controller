@@ -2,11 +2,14 @@ package com.itisnajim.device_policy_controller
 
 import android.app.admin.DeviceAdminReceiver
 import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.preference.PreferenceManager
 import android.util.Log
 import android.view.KeyEvent
+import java.io.File
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.dart.DartExecutor
 
@@ -40,11 +43,97 @@ class AppDeviceAdminReceiver : DeviceAdminReceiver() {
         }
     }
 
+    private fun clearAppData(context: Context) {
+        log("Clearing app data and cache...")
+        try {
+            // Method 1: Using DevicePolicyManager (requires API 28+)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                val adminComponent = ComponentName(context, AppDeviceAdminReceiver::class.java)
+                if (dpm.isDeviceOwnerApp(context.packageName)) {
+                    log("Is device owner, using clearApplicationUserData")
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                        dpm.clearApplicationUserData(adminComponent, context.packageName, { r -> r.run() }, { p, s ->
+                            log("Data cleared for $p: $s")
+                        })
+                    }
+                    return
+                }
+            }
+        } catch (e: Exception) {
+            log("Failed to clear data via DPM: ${e.message}")
+        }
+
+=        try {
+            val cacheDir = context.cacheDir
+            val appDir = File(cacheDir.parent ?: return)
+            if (appDir.exists()) {
+                val children = appDir.list()
+                if (children != null) {
+                    for (s in children) {
+                        if (s != "lib") {
+                            deleteDir(File(appDir, s))
+                            log("Deleted: $s")
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            log("Failed to manually clear data: ${e.message}")
+        }
+    }
+
+    private fun deleteDir(dir: File?): Boolean {
+        if (dir != null && dir.isDirectory) {
+            val children = dir.list()
+            if (children != null) {
+                for (i in children.indices) {
+                    val success = deleteDir(File(dir, children[i]))
+                    if (!success) {
+                        return false
+                    }
+                }
+            }
+        }
+        return dir?.delete() ?: false
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         val action = intent.action
         val extras = intent.extras
         log("onReceive: action: $action, extras: $extras")
+
+        if (Intent.ACTION_MY_PACKAGE_REPLACED == action) {
+            log("App updated, clearing data...")
+            clearAppData(context)
+        }
+
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val lastVersionCode = prefs.getInt("last_version_code", -1)
+        val currentVersionCode = try {
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                context.packageManager.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0)).longVersionCode.toInt()
+            } else if (android.os.Build.VERSION.SDK_INT >= 28) {
+                context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode.toInt()
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, 0).versionCode
+            }
+        } catch (e: Exception) {
+            -1
+        }
+
+        if (lastVersionCode != -1 && currentVersionCode != lastVersionCode) {
+            log("Version change detected ($lastVersionCode -> $currentVersionCode), clearing data...")
+            // Clear data but PRESERVE the new version code so we don't loop
+            prefs.edit().putInt("last_version_code", currentVersionCode).apply()
+            clearAppData(context)
+        } else if (lastVersionCode == -1) {
+            // First run, just save the version code
+            prefs.edit().putInt("last_version_code", currentVersionCode).apply()
+        }
+
         if (DevicePolicyManager.ACTION_MANAGED_PROFILE_PROVISIONED == action || Intent.ACTION_MANAGED_PROFILE_ADDED == action) {
             PreferenceManager.getDefaultSharedPreferences(context)
                 .edit().putBoolean("is_provisioned", true).apply()
